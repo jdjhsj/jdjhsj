@@ -1,0 +1,49 @@
+{
+  "annee": 2026,
+  "mois": 10,
+  "salaries": [
+    {
+      "matricule": "001",
+      "nom": "Ahmed Benali",
+      "fonction": "Comptable",
+      "cin": "AB123456",
+      "numero_cnss": "123456789",
+      "salaire_base": 8000,
+      "date_embauche": "2019-03-01",
+      "personnes_a_charge": 3,
+      "variables": {
+        "heures_sup": {"jour": 10, "repos_jour": 4},
+        "primes": [{"libelle": "Prime de rendement", "montant": 500}],
+        "indemnites": {"transport": 600, "panier": 400},
+        "jours_conges": 3
+      }
+    },
+    {
+      "matricule": "002",
+      "nom": "Salma El Idrissi",
+      "fonction": "Directrice commerciale",
+      "salaire_base": 25000,
+      "date_embauche": "2010-09-15",
+      "personnes_a_charge": 2,
+      "taux_cimr_salarie": 6,
+      "taux_cimr_patronal": 7.8,
+      "variables": {
+        "primes": [{"libelle": "Commission", "montant": 3000}],
+        "indemnites": {"representation": 2500, "transport": 500},
+        "avantages_nature": 1200,
+        "interets_logement": 2000
+      }
+    },
+    {
+      "matricule": "003",
+      "nom": "Youssef Amrani",
+      "fonction": "Opérateur",
+      "salaire_base": 3422.72,
+      "date_embauche": "2025-06-01",
+      "variables": {
+        "heures_sup": {"nuit": 6},
+        "jours_absence": 1
+      }
+    }
+  ]
+}
