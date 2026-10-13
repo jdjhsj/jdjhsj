@@ -12,9 +12,9 @@ dépendance** : il suffit d'avoir Python 3.10 ou plus récent.
 | **Heures supplémentaires** (art. 201) | +25 % jour, +50 % nuit, +50 % jour de repos, +100 % nuit de repos |
 | **Prime d'ancienneté** (art. 350) | 5 % (2 ans), 10 % (5 ans), 15 % (12 ans), 20 % (20 ans), 25 % (25 ans), sur base + heures sup. |
 | **Primes imposables, avantages en nature** | ajoutés au brut imposable |
-| **Absences et congés** | 22 types (voir ci-dessous) : jours maintenus, retenue base / 26, indemnités journalières CNSS estimées |
+| **Absences et congés** | 23 types (voir ci-dessous) : jours maintenus, retenue base / 26, indemnités journalières CNSS estimées |
 | **Congé annuel payé** (art. 231 et s.) | 1,5 j/mois (2 j avant 18 ans), +1,5 j par 5 ans d'ancienneté, plafond 30 j ; indemnité = salaire de référence / 26 par jour ; solde et indemnité compensatrice |
-| **Indemnités et primes** | catalogue de 47 rubriques avec régime IR et CNSS distincts (voir ci-dessous) |
+| **Indemnités et primes** | catalogue de 46 rubriques avec régime IR et CNSS distincts (voir ci-dessous) |
 | **CNSS** | salarié 4,48 % plafonné à 6 000 DH ; patronal 8,98 % plafonné + allocations familiales 6,40 % + TFP 1,60 % |
 | **AMO** | salarié 2,26 %, patronal 4,11 % (non plafonnés) |
 | **CIMR** (facultatif) | taux salarié et patronal au choix, déductible de l'IR |
