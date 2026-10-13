@@ -14,6 +14,50 @@ dépendance** : il suffit d'avoir Python 3.10 ou plus récent.
    - **`lancer_mac.command`** sous Mac (la première fois : clic droit > Ouvrir).
 4. Le navigateur s'ouvre sur <http://localhost:8000>. Laissez la fenêtre noire ouverte
    pendant l'utilisation ; fermez-la pour arrêter le logiciel.
+5. **Premier lancement** : créez le compte administrateur (identifiant + mot de passe
+   de 8 caractères minimum). Ensuite, chaque ouverture demande de se connecter.
+
+## Connexion et utilisateurs
+
+- Au premier lancement, la page **Premier lancement** crée le compte administrateur.
+- L'administrateur ajoute ou supprime des utilisateurs dans le menu **Utilisateurs**
+  (rôle *Utilisateur* ou *Administrateur*).
+- Chacun peut changer son mot de passe en cliquant sur son nom en haut à droite.
+- Les mots de passe sont stockés hachés (PBKDF2-SHA256), jamais en clair. La session
+  expire après 8 heures d'inactivité et à chaque redémarrage du logiciel.
+- Les comptes et le registre des salariés sont enregistrés dans le dossier `donnees/`
+  (à sauvegarder régulièrement ; il n'est pas envoyé sur GitHub).
+- Mot de passe administrateur perdu : arrêtez le logiciel et supprimez
+  `donnees/utilisateurs.json`, puis recréez le compte au lancement suivant.
+
+## Import des salariés en masse (Excel ou CSV)
+
+Menu **Salariés et paie du mois** :
+
+1. Cliquez sur **Télécharger le modèle**, ouvrez-le dans Excel et remplissez une ligne par salarié.
+2. Enregistrez en **.xlsx** ou **.csv**, puis importez le fichier.
+   - *Ajouter / mettre à jour* : les salariés sont rapprochés par matricule.
+   - *Remplacer tout le registre* : efface les salariés existants.
+3. Choisissez le mois et cliquez sur **Calculer la paie** : tous les bulletins sont générés,
+   avec un récapitulatif, l'impression de tous les bulletins (PDF) et le journal de paie en CSV.
+
+Colonnes reconnues (les majuscules, accents et espaces sont ignorés, par exemple
+« Date d'embauche » ou « Salaire de base ») :
+
+| Colonnes | Contenu |
+|---|---|
+| `nom`, `salaire_base`, `date_embauche` | **obligatoires** |
+| `matricule`, `fonction`, `cin`, `numero_cnss`, `date_naissance`, `personnes_a_charge`, `taux_cimr_salarie`, `taux_cimr_patronal` | identité (CIMR en %) |
+| `hs_jour`, `hs_nuit`, `hs_repos_jour`, `hs_repos_nuit` | heures supplémentaires |
+| code d'une rubrique : `transport`, `panier`, `prime_13e_mois`, `avantage_voiture`… | montant du mois |
+| `<code>_quantite`, `<code>_cumul` | ex. `kilometrique_quantite` (km), `gratifications_sociales_cumul` |
+| code d'un congé : `conge_annuel`, `maladie`, `mariage_salarie`… | jours d'absence du mois |
+| `salaire_reference_conges`, `salaire_reference_ij`, `interets_logement`, `avance`, `autres_retenues` | autres variables |
+
+Dates acceptées : `JJ/MM/AAAA`, `AAAA-MM-JJ` ou cellule date Excel. Les nombres peuvent
+utiliser la virgule. Les lignes en erreur sont listées avec leur numéro, sans bloquer les autres ;
+les colonnes non reconnues sont signalées. Le format Excel ancien `.xls` n'est pas lu :
+enregistrez en `.xlsx` ou `.csv`.
 
 ## Ce que le logiciel calcule
 
@@ -177,6 +221,8 @@ python3 -m unittest discover -s tests -v
 - Les plafonds annuels (gratifications sociales) demandent de saisir le cumul déjà versé.
 - La carence maladie de 3 jours est appliquée par saisie mensuelle (un arrêt sur deux mois
   doit être ajusté à la main).
+- Les éléments variables importés sont réutilisés chaque mois tant qu'un nouvel import
+  ne les remplace pas : réimportez le fichier du mois avant de calculer la paie.
 - Les indemnités de licenciement, le solde de tout compte complet et les
   déclarations CNSS (DAMANCOM) / IR (état 9421) ne sont pas encore générés.
 
