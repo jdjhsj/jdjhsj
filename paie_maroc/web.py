@@ -14,18 +14,8 @@ from .calcul import calculer_bulletin
 from .conges import droits_conges
 from .donnees import salarie_depuis_dict, variables_depuis_dict
 from .rendu import CSS, _qte, dh, page_html
-
-INDEMNITES = [
-    ("transport", "Transport (exo. 500 DH)"),
-    ("transport_hors_perimetre", "Transport hors périmètre (exo. 750 DH)"),
-    ("panier", "Prime de panier (exo. 2 × SMIG h / jour)"),
-    ("representation", "Représentation (exo. 10 % du base)"),
-    ("caisse", "Caisse (exo. 190 DH)"),
-    ("lait", "Lait (exo. 150 DH)"),
-    ("outillage", "Outillage (exo. 100 DH)"),
-    ("salissure", "Salissure (exo. 210 DH)"),
-    ("frais_justifies", "Remboursement de frais justifiés"),
-]
+from .rubriques import CATEGORIES, RUBRIQUES, par_categorie
+from .types_conges import GROUPES, TYPES_CONGE, par_groupe
 
 HS = [("jour", "Jour +25 %"), ("nuit", "Nuit +50 %"),
       ("repos_jour", "Repos jour +50 %"), ("repos_nuit", "Repos nuit +100 %")]
@@ -38,6 +28,11 @@ legend { font-weight:600; padding:0 6px; }
 label { display:flex; flex-direction:column; font-size:13px; color:var(--gris); gap:4px; }
 input { font:inherit; color:var(--encre); padding:7px 9px; border:1px solid var(--trait); border-radius:5px; min-width:0; }
 button[type=submit] { font:inherit; font-weight:600; background:var(--accent); color:#fff; border:none; padding:10px 20px; border-radius:6px; cursor:pointer; }
+details { border:1px solid var(--trait); border-radius:6px; margin:0 0 12px; padding:10px 16px; }
+details[open] { padding-bottom:16px; }
+summary { font-weight:600; cursor:pointer; }
+.aide { display:block; font-size:11.5px; color:var(--gris); }
+.ref td, .ref th { text-align:left; vertical-align:top; }
 nav { max-width:900px; margin:0 auto 16px; display:flex; gap:16px; } nav a { color:var(--accent); }
 .erreur { max-width:900px; margin:0 auto 16px; background:#fdecec; border:1px solid #e9a3a3; padding:10px 14px; border-radius:6px; }
 """
@@ -48,15 +43,51 @@ def _champ(nom, libelle, valeur="", type_="text", extra=""):
             f'value="{escape(str(valeur))}" {extra}></label>')
 
 
-def _num(nom, libelle, valeur=""):
-    return _champ(nom, libelle, valeur, "text", 'inputmode="decimal"')
+def _num(nom, libelle, valeur="", aide=""):
+    aide_html = f'<span class="aide">{escape(aide)}</span>' if aide else ""
+    return (f'<label>{escape(libelle)}{aide_html}<input name="{nom}" type="text" inputmode="decimal" '
+            f'value="{escape(str(valeur))}"></label>')
+
+
+def _aide_rubrique(r) -> str:
+    if r.categorie in ("imposable", "avantage"):
+        return "Imposable IR et CNSS"
+    if r.ir == r.cnss:
+        return r.ir.description()
+    return f"IR : {r.ir.description()} · CNSS : {r.cnss.description()}"
+
+
+def _champs_rubriques() -> str:
+    blocs = []
+    for cat, rubriques in par_categorie().items():
+        champs = []
+        for r in rubriques:
+            champs.append(_num("ind_" + r.code, r.libelle, aide=_aide_rubrique(r)))
+            if "par_unite" in (r.ir.type, r.cnss.type):
+                champs.append(_num("qte_" + r.code, f"{r.libelle} : quantité ({r.unite})"))
+            if {"annuel", "global"} & {r.ir.type, r.cnss.type}:
+                champs.append(_num("cumul_" + r.code, f"{r.libelle} : déjà versé cette année (DH)"))
+        ouvert = " open" if cat == "exoneree" else ""
+        blocs.append(f'<details{ouvert}><summary>{escape(CATEGORIES[cat])}</summary>'
+                     f'<div class="grille" style="margin-top:12px">{"".join(champs)}</div></details>')
+    return "".join(blocs)
+
+
+def _champs_absences() -> str:
+    blocs = []
+    for groupe, types in par_groupe().items():
+        champs = "".join(_num("abs_" + t.code, t.libelle, aide=t.regime) for t in types)
+        ouvert = " open" if groupe == "annuel" else ""
+        blocs.append(f'<details{ouvert}><summary>{escape(GROUPES[groupe])}</summary>'
+                     f'<div class="grille" style="margin-top:12px">{champs}</div></details>')
+    return "".join(blocs)
 
 
 def _page(titre, corps):
     return (f'<!doctype html><html lang="fr"><head><meta charset="utf-8">'
             f'<meta name="viewport" content="width=device-width,initial-scale=1">'
             f'<title>{escape(titre)}</title><style>{CSS}{FORM_CSS}</style></head><body>'
-            f'<nav><a href="/">Bulletin de paie</a><a href="/conges">Congés payés</a></nav>'
+            f'<nav><a href="/">Bulletin de paie</a><a href="/conges">Congés payés</a><a href="/referentiel">Référentiel indemnités et congés</a></nav>'
             f'{corps}</body></html>')
 
 
@@ -90,18 +121,19 @@ def formulaire_paie(erreur: str = "") -> str:
   <fieldset><legend>Heures supplémentaires (nombre d'heures)</legend><div class="grille">
     {"".join(_num("hs_" + k, l) for k, l in HS)}
   </div></fieldset>
-  <fieldset><legend>Primes et avantages imposables</legend><div class="grille">
+  <fieldset><legend>Primes imposables (libellé libre)</legend><div class="grille">
     {primes}
-    {_num("avantages_nature", "Avantages en nature (DH)")}
   </div></fieldset>
-  <fieldset><legend>Indemnités exonérées (dans la limite des plafonds)</legend><div class="grille">
-    {"".join(_num("ind_" + k, l) for k, l in INDEMNITES)}
-  </div></fieldset>
-  <fieldset><legend>Absences et congés payés</legend><div class="grille">
-    {_num("jours_absence", "Absences non payées (jours)")}
-    {_num("jours_conges", "Congés payés pris (jours ouvrables)")}
-    {_num("salaire_reference_conges", "Salaire moyen 12 mois (facultatif)")}
-  </div></fieldset>
+  <fieldset><legend>Indemnités, primes et avantages (catalogue)</legend>
+    {_champs_rubriques()}
+  </fieldset>
+  <fieldset><legend>Congés et absences du mois (jours ouvrables)</legend>
+    {_champs_absences()}
+    <div class="grille">
+      {_num("salaire_reference_conges", "Salaire moyen 12 mois pour le congé annuel (facultatif)")}
+      {_num("salaire_reference_ij", "Salaire moyen pour les indemnités CNSS (facultatif)")}
+    </div>
+  </fieldset>
   <fieldset><legend>Déductions et retenues</legend><div class="grille">
     {_num("interets_logement", "Intérêts prêt logement (DH/mois)")}
     {_num("avance", "Avance sur salaire (DH)")}
@@ -129,6 +161,35 @@ def formulaire_conges(resultat: str = "", erreur: str = "") -> str:
 </form>{resultat}""")
 
 
+def page_referentiel() -> str:
+    lignes_r = []
+    for cat, rubriques in par_categorie().items():
+        lignes_r.append(f'<tr class="total"><td colspan="4">{escape(CATEGORIES[cat])}</td></tr>')
+        for r in rubriques:
+            lignes_r.append(f"<tr><td>{escape(r.libelle)}<br><code>{r.code}</code></td><td>{escape(r.ir.description())}</td>"
+                            f"<td>{escape(r.cnss.description())}</td><td>{escape(r.note)}</td></tr>")
+    lignes_c = []
+    for groupe, types in par_groupe().items():
+        lignes_c.append(f'<tr class="total"><td colspan="5">{escape(GROUPES[groupe])}</td></tr>')
+        for t in types:
+            duree = f"{t.duree_legale:g} j" if t.duree_legale is not None else ""
+            lignes_c.append(f"<tr><td>{escape(t.libelle)}<br><code>{t.code}</code></td><td>{duree}</td>"
+                            f"<td>{escape(t.regime)}</td><td>{escape(t.article)}</td><td>{escape(t.note)}</td></tr>")
+    return _page("Référentiel", f"""
+<div class="carte">
+  <h1>Indemnités et primes</h1>
+  <p class="sous">Régime fiscal (IR, art. 57 CGI) et social (CNSS/AMO, arrêté n° 1314-25). Les plafonds sont modifiables dans <code>rubriques.py</code>.</p>
+  <div class="wrap"><table class="ref"><thead><tr><th>Rubrique</th><th>IR</th><th>CNSS / AMO</th><th>Conditions</th></tr></thead>
+  <tbody>{"".join(lignes_r)}</tbody></table></div>
+</div>
+<div class="carte">
+  <h1>Congés et absences</h1>
+  <p class="sous">Code du travail (loi 65-99). Modifiables dans <code>types_conges.py</code>.</p>
+  <div class="wrap"><table class="ref"><thead><tr><th>Type</th><th>Durée légale</th><th>Rémunération</th><th>Texte</th><th>Remarques</th></tr></thead>
+  <tbody>{"".join(lignes_c)}</tbody></table></div>
+</div>""")
+
+
 def _valeurs(corps: bytes) -> dict:
     return {k: v[0].strip() for k, v in parse_qs(corps.decode("utf-8"), keep_blank_values=True).items()}
 
@@ -138,7 +199,9 @@ def calcul_depuis_formulaire(f: dict):
     variables = variables_depuis_dict({
         **f,
         "heures_sup": {k: f.get("hs_" + k) for k, _ in HS},
-        "indemnites": {k: f.get("ind_" + k) for k, _ in INDEMNITES},
+        "indemnites": {code: {"montant": f.get("ind_" + code), "quantite": f.get("qte_" + code),
+                              "cumul_annuel": f.get("cumul_" + code)} for code in RUBRIQUES},
+        "absences": {code: f.get("abs_" + code) for code in TYPES_CONGE},
         "primes": [{"libelle": f.get(f"prime_libelle_{i}") or f"Prime {i}", "montant": f.get(f"prime_montant_{i}")}
                    for i in (1, 2, 3)],
     })
@@ -159,6 +222,8 @@ class Gestionnaire(BaseHTTPRequestHandler):
             self._envoyer(formulaire_paie())
         elif self.path == "/conges":
             self._envoyer(formulaire_conges())
+        elif self.path == "/referentiel":
+            self._envoyer(page_referentiel())
         else:
             self._envoyer(_page("Introuvable", "<p>Page introuvable.</p>"), 404)
 

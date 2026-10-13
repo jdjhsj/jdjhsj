@@ -60,11 +60,22 @@ tr.total td { font-weight:600; background:#fafbfc; }
 """
 
 
+def _ij_html(b: Bulletin) -> str:
+    if not b.indemnites_cnss:
+        return ""
+    lignes = "".join(
+        f"<tr><td>{escape(i.libelle)}</td><td>{_qte(i.jours)}</td><td>{dh(i.taux_journalier)}</td><td>{dh(i.montant)}</td></tr>"
+        for i in b.indemnites_cnss)
+    return ('<div class="wrap"><table><thead><tr><th>Indemnités journalières CNSS (estimation, versées par la CNSS)'
+            '</th><th>Jours</th><th>Taux journalier</th><th>Montant (DH)</th></tr></thead>'
+            f'<tbody>{lignes}</tbody></table></div>')
+
+
 def bulletin_html(b: Bulletin) -> str:
     s = b.salarie
     lignes_g = "".join(
         f"<tr><td>{escape(l.libelle)}</td><td>{_qte(l.base)}</td><td>{pct(l.taux) if l.pourcentage else dh(l.taux)}</td>"
-        f"<td>{dh(l.gain)}</td></tr>"
+        f"<td>{escape(l.info) if l.info else dh(l.gain)}</td></tr>"
         for l in b.lignes_gains
     )
     lignes_c = "".join(
@@ -96,7 +107,8 @@ def bulletin_html(b: Bulletin) -> str:
     <thead><tr><th>Rubrique</th><th>Base / Nombre</th><th>Taux</th><th>Gain (DH)</th></tr></thead>
     <tbody>{lignes_g}
       <tr class="total"><td>Salaire brut</td><td></td><td></td><td>{dh(b.salaire_brut)}</td></tr>
-      <tr><td>dont éléments exonérés</td><td></td><td></td><td>{dh(b.total_exonere)}</td></tr>
+      <tr><td>dont éléments exonérés d'IR</td><td></td><td></td><td>{dh(b.total_exonere)}</td></tr>
+      <tr><td>dont éléments exclus de l'assiette CNSS</td><td></td><td></td><td>{dh(b.total_exonere_cnss)}</td></tr>
       <tr class="total"><td>Salaire brut imposable</td><td></td><td></td><td>{dh(b.brut_imposable)}</td></tr>
     </tbody>
   </table></div>
@@ -115,6 +127,7 @@ def bulletin_html(b: Bulletin) -> str:
     <div><span>IR brut − charges de famille</span>{dh(b.ir_brut)} − {dh(b.deduction_famille)}</div>
     <div><span>Coût total employeur</span>{dh(b.cout_employeur)}</div>
   </div>
+  {_ij_html(b)}
   <div class="net"><span>Net à payer</span><span>{dh(b.net_a_payer)} DH</span></div>
 </section>"""
 
@@ -144,7 +157,7 @@ def bulletin_texte(b: Bulletin) -> str:
         "-" * largeur,
     ]
     for l in b.lignes_gains:
-        out.append(f"{l.libelle:<48}{dh(l.gain):>24}")
+        out.append(f"{l.libelle[:47]:<48}{(l.info or dh(l.gain)):>24}")
     out += [
         "-" * largeur,
         f"{'SALAIRE BRUT':<48}{dh(b.salaire_brut):>24}",
@@ -165,13 +178,15 @@ def bulletin_texte(b: Bulletin) -> str:
         f"{'Charges patronales':<48}{dh(b.charges_patronales):>24}",
         f"{'Coût total employeur':<48}{dh(b.cout_employeur):>24}",
     ]
+    for i in b.indemnites_cnss:
+        out.append(f"(i) IJ CNSS estimée - {i.libelle} : {_qte(i.jours)} j x {dh(i.taux_journalier)} = {dh(i.montant)} DH")
     for a in b.avertissements:
         out.append(f"! {a}")
     return "\n".join(out)
 
 
 COLONNES_JOURNAL = [
-    "matricule", "nom", "periode", "salaire_brut", "total_exonere", "brut_imposable",
+    "matricule", "nom", "periode", "salaire_brut", "total_exonere", "brut_imposable", "base_cnss",
     "cnss", "amo", "cimr", "frais_professionnels", "net_imposable", "ir",
     "net_a_payer", "charges_patronales", "cout_employeur",
 ]

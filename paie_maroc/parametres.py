@@ -73,21 +73,6 @@ _COMMUN = {
     "conges_jours_par_mois_moins_18": D("2"),
     "conges_bonus_par_5_ans": D("1.5"),
     "conges_plafond_annuel": D("30"),
-
-    # --- Indemnités exonérées (IR et CNSS) : plafond mensuel ---
-    # None = exonérée sans plafond (sur justificatifs).
-    # "panier" et "representation" sont calculés à part (voir calcul.py).
-    "plafonds_exoneres": {
-        "transport": D("500"),             # déplacement domicile-travail, périmètre urbain
-        "transport_hors_perimetre": D("750"),
-        "caisse": D("190"),
-        "lait": D("150"),
-        "outillage": D("100"),
-        "salissure": D("210"),
-        "frais_justifies": None,           # remboursement de frais sur justificatifs
-    },
-    "panier_multiple_smig": D("2"),        # 2 x SMIG horaire par jour travaillé
-    "taux_representation": D("0.10"),      # 10 % du salaire de base
 }
 
 PARAMETRES = {

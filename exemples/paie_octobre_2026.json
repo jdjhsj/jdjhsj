@@ -14,8 +14,8 @@
       "variables": {
         "heures_sup": {"jour": 10, "repos_jour": 4},
         "primes": [{"libelle": "Prime de rendement", "montant": 500}],
-        "indemnites": {"transport": 600, "panier": 400},
-        "jours_conges": 3
+        "indemnites": {"transport": 600, "panier": 400, "prime_assiduite": 300},
+        "absences": {"conge_annuel": 3, "naissance": 3}
       }
     },
     {
@@ -28,9 +28,14 @@
       "taux_cimr_salarie": 6,
       "taux_cimr_patronal": 7.8,
       "variables": {
-        "primes": [{"libelle": "Commission", "montant": 3000}],
-        "indemnites": {"representation": 2500, "transport": 500},
-        "avantages_nature": 1200,
+        "indemnites": {
+          "commission": 3000,
+          "representation": 2500,
+          "transport": 500,
+          "kilometrique": {"montant": 1200, "quantite": 350},
+          "gratifications_sociales": {"montant": 2000, "cumul_annuel": 1000},
+          "avantage_voiture": 1200
+        },
         "interets_logement": 2000
       }
     },
@@ -42,7 +47,8 @@
       "date_embauche": "2025-06-01",
       "variables": {
         "heures_sup": {"nuit": 6},
-        "jours_absence": 1
+        "indemnites": {"salissure": 210, "outillage": 100, "prime_penibilite": 250},
+        "absences": {"maladie": 5, "absence_non_payee": 1}
       }
     }
   ]

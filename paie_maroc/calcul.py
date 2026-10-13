@@ -7,6 +7,8 @@ from datetime import date
 from decimal import ROUND_HALF_UP, Decimal as D
 
 from .parametres import parametres
+from .rubriques import Regime, rubrique
+from .types_conges import type_conge
 
 ZERO = D("0")
 CENT = D("0.01")
@@ -57,15 +59,32 @@ class VariablesPaie:
     annee: int
     mois: int
     heures_sup: dict = field(default_factory=dict)   # {"jour": h, "nuit": h, "repos_jour": h, "repos_nuit": h}
-    primes: list = field(default_factory=list)       # primes imposables (Prime)
-    avantages_nature: D = ZERO                       # imposables
-    indemnites: dict = field(default_factory=dict)   # indemnités à régime d'exonération (voir parametres)
-    jours_absence: D = ZERO                          # absences non rémunérées (jours ouvrables)
-    jours_conges: D = ZERO                           # congés payés pris dans le mois (jours ouvrables)
+    primes: list = field(default_factory=list)       # primes imposables libres (Prime)
+    # Rubriques du catalogue (voir rubriques.py) : {code: montant}
+    # ou {code: {"montant": ..., "quantite": ..., "cumul_annuel": ...}}
+    indemnites: dict = field(default_factory=dict)
+    # Congés et absences du mois (voir types_conges.py) : {code: jours ouvrables}
+    absences: dict = field(default_factory=dict)
     salaire_reference_conges: D | None = None        # salaire moyen mensuel des 12 derniers mois (facultatif)
+    salaire_reference_ij: D | None = None            # salaire moyen pour les indemnités CNSS (facultatif)
     interets_logement: D = ZERO                      # intérêts de prêt logement principal (mensuels)
     avance: D = ZERO                                 # avance / acompte à retenir sur le net
     autres_retenues: D = ZERO                        # prêt, saisie, etc.
+    # Anciens champs, conservés pour compatibilité :
+    avantages_nature: D = ZERO                       # -> indemnites["avantage_autre"]
+    jours_absence: D = ZERO                          # -> absences["absence_non_payee"]
+    jours_conges: D = ZERO                           # -> absences["conge_annuel"]
+
+    def __post_init__(self):
+        self.indemnites = dict(self.indemnites)
+        self.absences = dict(self.absences)
+        for code, valeur in (("avantage_autre", self.avantages_nature),):
+            if dec(valeur):
+                self.indemnites[code] = dec(self.indemnites.get(code)) + dec(valeur)
+        for code, valeur in (("absence_non_payee", self.jours_absence), ("conge_annuel", self.jours_conges)):
+            if dec(valeur):
+                self.absences[code] = dec(self.absences.get(code)) + dec(valeur)
+        self.avantages_nature = self.jours_absence = self.jours_conges = ZERO
 
 
 # ---------------------------------------------------------------------------
@@ -81,6 +100,15 @@ class Ligne:
     retenue: D = ZERO
     patronal: D = ZERO
     pourcentage: bool = False   # le taux est un pourcentage (sinon un prix unitaire)
+    info: str = ""              # texte affiché à la place du gain (ex. « maintenu »)
+
+
+@dataclass
+class IndemniteCNSS:
+    libelle: str
+    jours: D
+    taux_journalier: D
+    montant: D
 
 
 @dataclass
@@ -91,7 +119,8 @@ class Bulletin:
     lignes_cotisations: list
     salaire_brut: D
     brut_imposable: D
-    total_exonere: D
+    total_exonere: D            # éléments exonérés d'IR
+    total_exonere_cnss: D       # éléments exclus de l'assiette CNSS
     base_cnss: D
     cnss: D
     amo: D
@@ -110,6 +139,8 @@ class Bulletin:
     taux_anciennete: D
     taux_horaire: D
     avertissements: list
+    jours_travailles: D = ZERO
+    indemnites_cnss: list = field(default_factory=list)   # IJ versées par la CNSS (information)
 
     @property
     def periode(self) -> str:
@@ -163,6 +194,37 @@ def deduction_charges_famille(personnes: int, p: dict) -> D:
     return arrondi(p["charge_famille_annuelle"] * n / 12)
 
 
+def montant_exonere(regime: Regime, montant: D, base: D, jours_travailles: D, p: dict,
+                    quantite: D = ZERO, cumul_annuel: D = ZERO) -> D:
+    """Part exonérée d'une rubrique selon son régime (IR ou CNSS)."""
+    t, v = regime.type, regime.valeur
+    if t == "soumis":
+        return ZERO
+    if t == "exonere":
+        plafond = montant
+    elif t == "fixe":
+        plafond = v
+    elif t == "pct_base":
+        plafond = base * v
+        if regime.maximum is not None:
+            plafond = min(plafond, regime.maximum)
+    elif t == "smig_jour":
+        plafond = v * p["smig_horaire"] * jours_travailles
+    elif t == "par_unite":
+        plafond = v * quantite
+    elif t in ("annuel", "global"):
+        plafond = max(v - cumul_annuel, ZERO)
+    else:
+        raise ValueError(f"Régime inconnu : {t}")
+    return arrondi(min(montant, max(plafond, ZERO)))
+
+
+def _valeurs_rubrique(valeur) -> tuple[D, D, D]:
+    if isinstance(valeur, dict):
+        return dec(valeur.get("montant")), dec(valeur.get("quantite")), dec(valeur.get("cumul_annuel"))
+    return dec(valeur), ZERO, ZERO
+
+
 # ---------------------------------------------------------------------------
 # Calcul du bulletin
 # ---------------------------------------------------------------------------
@@ -185,26 +247,50 @@ def calculer_bulletin(s: Salarie, v: VariablesPaie) -> Bulletin:
             f"({_fr(smig_mensuel)} DH = {_fr(p['smig_horaire'])} DH x {heures_mois} h)."
         )
 
-    jours_abs = dec(v.jours_absence)
-    jours_cp = dec(v.jours_conges)
-    if jours_abs + jours_cp > jours_mois:
-        avert.append("Absences + congés supérieurs au nombre de jours ouvrables du mois.")
+    absences = {code: dec(j) for code, j in v.absences.items() if dec(j)}
+    total_jours_abs = sum(absences.values(), ZERO)
+    if total_jours_abs > jours_mois:
+        avert.append("Total des absences et congés supérieur au nombre de jours ouvrables du mois.")
+    jours_travailles = max(jours_mois - total_jours_abs, ZERO)
 
-    # 1. Salaire de base, absences, congés payés
+    # 1. Salaire de base, absences et congés
     gains.append(Ligne("Salaire de base", heures_mois, arrondi(taux_h), arrondi(base)))
 
-    retenue_abs = arrondi(taux_j * jours_abs)
-    if jours_abs:
-        gains.append(Ligne("Absences non rémunérées", jours_abs, arrondi(taux_j), -retenue_abs))
-
+    retenue_abs = ZERO
     retenue_cp = indemnite_cp = ZERO
     ref_fournie = v.salaire_reference_conges not in (None, "")
-    if jours_cp:
-        ref = dec(v.salaire_reference_conges) if ref_fournie else base
-        retenue_cp = arrondi(taux_j * jours_cp)
-        indemnite_cp = arrondi(ref / jours_mois * jours_cp)
-        gains.append(Ligne("Retenue jours de congé", jours_cp, arrondi(taux_j), -retenue_cp))
-        gains.append(Ligne("Indemnité de congés payés", jours_cp, arrondi(ref / jours_mois), indemnite_cp))
+    ij_cnss: list[IndemniteCNSS] = []
+    ref_ij = dec(v.salaire_reference_ij) if v.salaire_reference_ij not in (None, "") else base
+
+    for code, jours in absences.items():
+        t = type_conge(code)
+        if code == "conge_annuel":
+            ref = dec(v.salaire_reference_conges) if ref_fournie else base
+            retenue_cp = arrondi(taux_j * jours)
+            indemnite_cp = arrondi(ref / jours_mois * jours)
+            gains.append(Ligne("Retenue jours de congé", jours, arrondi(taux_j), -retenue_cp))
+            gains.append(Ligne("Indemnité de congés payés", jours, arrondi(ref / jours_mois), indemnite_cp))
+            continue
+
+        if t.duree_legale is not None and jours > t.duree_legale:
+            avert.append(f"{t.libelle} : {jours:g} jours saisis, durée légale {t.duree_legale:g} jours.")
+        payes = jours if t.jours_payes is None else min(jours, t.jours_payes)
+        non_payes = jours - payes
+        if payes:
+            gains.append(Ligne(f"{t.libelle} (payé)", payes, info="maintenu"))
+        if non_payes:
+            montant = arrondi(taux_j * non_payes)
+            retenue_abs += montant
+            libelle = f"{t.libelle} (non payé)" if t.jours_payes else t.libelle
+            gains.append(Ligne(libelle, non_payes, arrondi(taux_j), -montant))
+
+        if t.ij_cnss:
+            taux_ij, carence, plafonnee = t.ij_cnss
+            ref_mois = min(ref_ij, p["plafond_cnss"]) if plafonnee else ref_ij
+            journalier = arrondi(ref_mois / jours_mois * taux_ij)
+            jours_ij = max(jours - carence, ZERO)
+            if jours_ij:
+                ij_cnss.append(IndemniteCNSS(t.libelle, jours_ij, journalier, arrondi(journalier * jours_ij)))
 
     # 2. Heures supplémentaires
     total_hs = ZERO
@@ -232,55 +318,46 @@ def calculer_bulletin(s: Salarie, v: VariablesPaie) -> Bulletin:
     if prime_anc:
         gains.append(Ligne(f"Prime d'ancienneté ({anciennete} an{'s' if anciennete > 1 else ''})", arrondi(base_anc), t_anc, prime_anc, pourcentage=True))
 
-    # 4. Primes imposables et avantages en nature
+    # 4. Primes imposables libres
     total_primes = ZERO
     for prime in v.primes:
         m = arrondi(dec(prime.montant))
         if m:
             total_primes += m
             gains.append(Ligne(prime.libelle, gain=m))
-    avantages = arrondi(dec(v.avantages_nature))
-    if avantages:
-        gains.append(Ligne("Avantages en nature", gain=avantages))
 
-    # 5. Indemnités à régime d'exonération
-    jours_travailles = max(jours_mois - jours_abs - jours_cp, ZERO)
-    plafonds = dict(p["plafonds_exoneres"])
-    plafonds["panier"] = arrondi(p["panier_multiple_smig"] * p["smig_horaire"] * jours_travailles)
-    plafonds["representation"] = arrondi(base * p["taux_representation"])
-    libelles_ind = {
-        "transport": "Indemnité de transport",
-        "transport_hors_perimetre": "Indemnité de transport (hors périmètre)",
-        "panier": "Prime de panier",
-        "representation": "Indemnité de représentation",
-        "caisse": "Indemnité de caisse",
-        "lait": "Indemnité de lait",
-        "outillage": "Prime d'outillage",
-        "salissure": "Prime de salissure",
-        "frais_justifies": "Remboursement de frais",
-    }
-    total_ind = total_exonere = ZERO
-    for cle, montant in v.indemnites.items():
-        if cle not in plafonds:
-            raise ValueError(f"Indemnité inconnue : {cle}")
-        m = arrondi(dec(montant))
+    # 5. Rubriques du catalogue : imposables, exonérées, rupture, avantages en nature
+    total_rub = exo_ir = exo_cnss = avantages = ZERO
+    for code, valeur in v.indemnites.items():
+        r = rubrique(code)
+        m, quantite, cumul = _valeurs_rubrique(valeur)
+        m = arrondi(m)
         if not m:
             continue
-        plafond = plafonds[cle]
-        exo = m if plafond is None else min(m, plafond)
-        total_ind += m
-        total_exonere += exo
-        gains.append(Ligne(libelles_ind[cle], gain=m))
-        if exo < m:
-            avert.append(f"{libelles_ind[cle]} : {_fr(m - exo)} DH au-delà du plafond ({_fr(plafond)} DH), réintégrés dans l'imposable.")
+        if r.ir.type == "par_unite" and not quantite:
+            avert.append(f"{r.libelle} : quantité ({r.unite}) non renseignée, montant entièrement imposable.")
+        e_ir = montant_exonere(r.ir, m, base, jours_travailles, p, quantite, cumul)
+        e_cnss = montant_exonere(r.cnss, m, base, jours_travailles, p, quantite, cumul)
+        total_rub += m
+        exo_ir += e_ir
+        exo_cnss += e_cnss
+        if not r.en_especes:
+            avantages += m
+        gains.append(Ligne(r.libelle, quantite or None, gain=m))
+        if r.ir.type != "soumis" and e_ir < m:
+            avert.append(f"{r.libelle} : {_fr(m - e_ir)} DH au-delà du plafond IR "
+                         f"({r.ir.description()}), réintégrés dans l'imposable.")
+        if r.cnss.type != "soumis" and e_cnss < m and r.cnss != r.ir:
+            avert.append(f"{r.libelle} : {_fr(m - e_cnss)} DH soumis à la CNSS ({r.cnss.description()}).")
 
     salaire_brut = (base - retenue_abs - retenue_cp + indemnite_cp + total_hs + prime_anc
-                    + total_primes + avantages + total_ind)
-    brut_imposable = salaire_brut - total_exonere
+                    + total_primes + total_rub)
+    brut_imposable = salaire_brut - exo_ir
+    total_exonere = exo_ir
 
     # 6. Cotisations salariales
     cot: list[Ligne] = []
-    base_cnss = brut_imposable
+    base_cnss = salaire_brut - exo_cnss
     base_plaf = min(base_cnss, p["plafond_cnss"])
     cnss = arrondi(base_plaf * p["taux_cnss_salarie"])
     amo = arrondi(base_cnss * p["taux_amo_salarie"])
@@ -300,8 +377,7 @@ def calculer_bulletin(s: Salarie, v: VariablesPaie) -> Bulletin:
         cot.append(Ligne("CIMR (retraite complémentaire)", arrondi(brut_imposable), dec(s.taux_cimr_salarie), retenue=cimr, patronal=cimr_pat))
 
     # 7. Impôt sur le revenu
-    avantages_hors_fp = avantages
-    fp = frais_professionnels(brut_imposable - avantages_hors_fp, p)
+    fp = frais_professionnels(max(brut_imposable - avantages, ZERO), p)
     interets = min(arrondi(dec(v.interets_logement)), arrondi(brut_imposable * p["plafond_interets_logement"]))
     net_imposable = max(brut_imposable - fp - cnss - amo - cimr - interets, ZERO)
     ir_brut = ir_mensuel(net_imposable, p)
@@ -330,7 +406,8 @@ def calculer_bulletin(s: Salarie, v: VariablesPaie) -> Bulletin:
         salarie=s, variables=v,
         lignes_gains=gains, lignes_cotisations=cot,
         salaire_brut=arrondi(salaire_brut), brut_imposable=arrondi(brut_imposable),
-        total_exonere=arrondi(total_exonere), base_cnss=arrondi(base_cnss),
+        total_exonere=arrondi(total_exonere), total_exonere_cnss=arrondi(exo_cnss),
+        base_cnss=arrondi(base_cnss),
         cnss=cnss, amo=amo, cimr=cimr, frais_professionnels=fp,
         interets_logement=interets, net_imposable=arrondi(net_imposable),
         ir_brut=ir_brut, deduction_famille=ded_famille, ir=ir,
@@ -339,4 +416,5 @@ def calculer_bulletin(s: Salarie, v: VariablesPaie) -> Bulletin:
         cout_employeur=arrondi(salaire_brut + charges_pat),
         anciennete_annees=anciennete, taux_anciennete=t_anc,
         taux_horaire=arrondi(taux_h), avertissements=avert,
+        jours_travailles=jours_travailles, indemnites_cnss=ij_cnss,
     )

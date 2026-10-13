@@ -126,6 +126,99 @@ class TestBulletin(unittest.TestCase):
         self.assertEqual(calculer_bulletin(salarie(), v).brut_imposable, D("9000.00"))
 
 
+class TestRubriques(unittest.TestCase):
+    def bulletin(self, **indemnites):
+        return calculer_bulletin(salarie(), VariablesPaie(2026, 10, indemnites=indemnites))
+
+    def test_catalogue_complet(self):
+        from paie_maroc.rubriques import RUBRIQUES
+        self.assertGreaterEqual(len(RUBRIQUES), 40)
+        for r in RUBRIQUES.values():
+            self.assertTrue(r.ir.description() and r.cnss.description())
+
+    def test_prime_imposable_du_catalogue(self):
+        b = self.bulletin(prime_13e_mois=D("8000"))
+        self.assertEqual(b.brut_imposable, D("16000.00"))
+        self.assertEqual(b.base_cnss, D("16000.00"))
+
+    def test_tournee_et_kilometrique(self):
+        b = self.bulletin(tournee=D("1800"), kilometrique={"montant": D("1000"), "quantite": D("300")})
+        self.assertEqual(b.total_exonere, D("2400.00"))   # 1 500 + 3 x 300
+        self.assertEqual(b.brut_imposable, D("8400.00"))
+
+    def test_kilometrique_sans_quantite_imposable(self):
+        b = self.bulletin(kilometrique=D("500"))
+        self.assertEqual(b.total_exonere, D("0.00"))
+        self.assertTrue(any("quantité" in a for a in b.avertissements))
+
+    def test_deplacement_forfaitaire_plafonne_5000(self):
+        b = calculer_bulletin(salarie(salaire_base=D("20000")),
+                              VariablesPaie(2026, 10, indemnites={"deplacement_forfaitaire": D("7000")}))
+        self.assertEqual(b.total_exonere, D("5000.00"))
+
+    def test_gratifications_sociales_regimes_differents(self):
+        b = self.bulletin(gratifications_sociales={"montant": D("3000"), "cumul_annuel": D("1000")})
+        self.assertEqual(b.total_exonere, D("1500.00"))        # IR : 2 500 - 1 000
+        self.assertEqual(b.total_exonere_cnss, D("3000.00"))   # CNSS : 5 000 - 1 000
+        self.assertEqual(b.base_cnss, D("8000.00"))
+
+    def test_indemnite_licenciement(self):
+        b = self.bulletin(indemnite_licenciement=D("120000"), indemnite_preavis=D("8000"))
+        self.assertEqual(b.total_exonere, D("120000.00"))
+        self.assertEqual(b.brut_imposable, D("16000.00"))
+        self.assertEqual(b.base_cnss, D("16000.00"))
+
+    def test_avantages_en_nature_catalogue(self):
+        b = self.bulletin(avantage_voiture=D("1500"), avantage_logement=D("2000"))
+        self.assertEqual(b.brut_imposable, D("11500.00"))
+        self.assertEqual(b.net_a_payer, b.salaire_brut - b.total_retenues - D("3500"))
+
+
+class TestTypesConges(unittest.TestCase):
+    def bulletin(self, base="7800", **absences):
+        return calculer_bulletin(salarie(salaire_base=D(base)), VariablesPaie(2026, 10, absences=absences))
+
+    def test_evenements_familiaux_payes(self):
+        b = self.bulletin(mariage_salarie=D("4"), naissance=D("3"), deces_proche=D("3"))
+        self.assertEqual(b.salaire_brut, D("7800.00"))
+        self.assertEqual(b.jours_travailles, D("16"))
+
+    def test_depassement_duree_legale(self):
+        b = self.bulletin(mariage_salarie=D("6"))
+        self.assertEqual(b.salaire_brut, D("7200.00"))   # 2 jours au-delà non payés
+        self.assertTrue(any("durée légale" in a for a in b.avertissements))
+
+    def test_maladie_retenue_et_ij_cnss(self):
+        b = self.bulletin(maladie=D("5"))
+        self.assertEqual(b.salaire_brut, D("6300.00"))   # 7 800 - 5 x 300
+        ij = b.indemnites_cnss[0]
+        self.assertEqual(ij.jours, D("2"))               # carence de 3 jours
+        self.assertEqual(ij.taux_journalier, D("153.85"))  # 6 000 / 26 x 2/3
+        self.assertEqual(ij.montant, D("307.70"))
+
+    def test_maternite(self):
+        b = self.bulletin(maternite=D("26"))
+        self.assertEqual(b.salaire_brut, D("0.00"))
+        self.assertEqual(b.indemnites_cnss[0].montant, D("6000.02"))   # 230,77 x 26
+
+    def test_accident_travail_premier_jour_paye(self):
+        b = self.bulletin(accident_travail=D("4"))
+        self.assertEqual(b.salaire_brut, D("6900.00"))   # 3 jours retenus
+
+    def test_sans_solde_et_jour_ferie(self):
+        b = self.bulletin(sans_solde=D("2"), jour_ferie=D("1"))
+        self.assertEqual(b.salaire_brut, D("7200.00"))
+
+    def test_panier_tient_compte_des_absences(self):
+        v = VariablesPaie(2026, 10, indemnites={"panier": D("5000")}, absences={"maladie": D("6")})
+        b = calculer_bulletin(salarie(), v)
+        self.assertEqual(b.total_exonere, D("716.80"))   # 2 x 17,92 x 20 jours
+
+    def test_type_inconnu(self):
+        with self.assertRaises(ValueError):
+            self.bulletin(vacances=D("1"))
+
+
 class TestConges(unittest.TestCase):
     def test_droits_standard(self):
         d = droits_conges(date(2024, 1, 1), date(2026, 12, 31), 12, 7800)
@@ -155,6 +248,20 @@ class TestRenduEtWeb(unittest.TestCase):
         html = page_html([b])
         self.assertIn("Net à payer", html)
         self.assertIn("Karim", journal_csv([b]))
+
+    def test_formulaire_web_catalogue(self):
+        f = {"nom": "Nadia", "salaire_base": "7800", "date_embauche": "2026-01-01", "mois": "10",
+             "annee": "2026", "ind_kilometrique": "600", "qte_kilometrique": "200",
+             "ind_prime_13e_mois": "7800", "abs_maladie": "4", "abs_naissance": "3"}
+        b = calcul_depuis_formulaire(f)
+        self.assertEqual(b.total_exonere, D("600.00"))
+        self.assertEqual(b.salaire_brut, D("15600.00") - D("1200.00") + D("600.00"))
+        self.assertIn("Indemnités journalières CNSS", page_html([b]))
+
+    def test_pages_web(self):
+        from paie_maroc.web import formulaire_paie, page_referentiel
+        self.assertIn("abs_maternite", formulaire_paie())
+        self.assertIn("Prime de tournée", page_referentiel())
 
 
 if __name__ == "__main__":
