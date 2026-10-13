@@ -260,9 +260,14 @@ class Gestionnaire(BaseHTTPRequestHandler):
             self._envoyer(page, 400)
 
 
-def lancer(hote: str = "127.0.0.1", port: int = 8000):
+def lancer(hote: str = "127.0.0.1", port: int = 8000, ouvrir_navigateur: bool = False):
     serveur = ThreadingHTTPServer((hote, port), Gestionnaire)
-    print(f"Logiciel de paie disponible sur http://{hote}:{port}  (Ctrl+C pour arrêter)")
+    adresse = f"http://{'localhost' if hote == '127.0.0.1' else hote}:{port}"
+    print(f"Logiciel de paie disponible sur {adresse}")
+    print("Laissez cette fenêtre ouverte. Pour arrêter : fermez-la ou appuyez sur Ctrl+C.")
+    if ouvrir_navigateur:
+        import webbrowser
+        webbrowser.open(adresse)
     try:
         serveur.serve_forever()
     except KeyboardInterrupt:

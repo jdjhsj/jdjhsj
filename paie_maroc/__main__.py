@@ -32,6 +32,7 @@ def main(argv=None) -> int:
     w = sous.add_parser("web", help="lancer l'interface web locale")
     w.add_argument("--hote", default="127.0.0.1")
     w.add_argument("--port", type=int, default=8000)
+    w.add_argument("--ouvrir", action="store_true", help="ouvrir le navigateur automatiquement")
 
     p = sous.add_parser("paie", help="calculer les bulletins d'un fichier JSON")
     p.add_argument("fichier")
@@ -41,7 +42,7 @@ def main(argv=None) -> int:
     args = parser.parse_args(argv)
     if args.commande == "web":
         from .web import lancer
-        lancer(args.hote, args.port)
+        lancer(args.hote, args.port, args.ouvrir)
         return 0
 
     bulletins = calculer_fichier(args.fichier)

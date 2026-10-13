@@ -4,6 +4,17 @@ Logiciel de traitement de la paie conforme au **Code du travail marocain** (loi 
 et au **Code général des impôts** (IR sur salaires). Écrit en Python, **sans aucune
 dépendance** : il suffit d'avoir Python 3.10 ou plus récent.
 
+## Démarrage rapide
+
+1. Installez Python depuis <https://www.python.org/downloads/>
+   (sous Windows, cochez **« Add Python to PATH »** pendant l'installation).
+2. Décompressez le projet.
+3. Double-cliquez sur :
+   - **`lancer_windows.bat`** sous Windows ;
+   - **`lancer_mac.command`** sous Mac (la première fois : clic droit > Ouvrir).
+4. Le navigateur s'ouvre sur <http://localhost:8000>. Laissez la fenêtre noire ouverte
+   pendant l'utilisation ; fermez-la pour arrêter le logiciel.
+
 ## Ce que le logiciel calcule
 
 | Élément | Règle appliquée |
