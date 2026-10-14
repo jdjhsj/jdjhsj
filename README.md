@@ -1,6 +1,6 @@
 # Paie Maroc
 
-Logiciel de traitement de la paie conforme au **Code du travail marocain** (loi 65-99)
+Logiciel de paie et de facturation. Paie conforme au **Code du travail marocain** (loi 65-99)
 et au **Code général des impôts** (IR sur salaires). Écrit en Python, **sans aucune
 dépendance** : il suffit d'avoir Python 3.10 ou plus récent.
 
@@ -139,6 +139,39 @@ Au-delà de la durée légale, les jours sont retenus et un avertissement s'affi
 Les indemnités journalières CNSS sont versées directement par la CNSS : elles
 apparaissent sur le bulletin à titre d'information, sans entrer dans le net.
 
+## Facturation clients
+
+Menus **Factures**, **Clients** et **Entreprise** (même connexion que la paie).
+
+1. **Entreprise** : saisissez une fois la raison sociale, l'adresse, l'ICE, l'IF, le RC, la patente,
+   le RIB et les mentions de bas de page. Elles figurent sur chaque facture.
+2. **Clients** : chaque client reçoit un code (`C0001`…) et sa **propre série de factures**,
+   identifiée par un préfixe (proposé automatiquement d'après le nom, ex. `ATLAS`).
+3. **Nouvelle facture** : choisissez le client, saisissez les lignes (désignation, quantité,
+   prix unitaire HT, TVA 20 / 14 / 10 / 7 / 0 %). Le numéro est attribué à l'émission.
+
+| Règle | Détail |
+|---|---|
+| Numérotation | `PRÉFIXE-ANNÉE-NNNN` (ex. `ATLAS-2026-0001`), continue et sans trou par client, repart à 0001 chaque année |
+| Unicité | deux clients ne peuvent pas avoir le même préfixe ; le préfixe est figé dès la première facture |
+| Facture émise | jamais modifiée ni supprimée ; elle conserve les coordonnées du client et de l'entreprise à sa date d'émission |
+| Paiements | paiements partiels ou totaux (virement, chèque, espèces, effet…), avec date et référence |
+| Annulation | avec motif, uniquement si aucun paiement ; le numéro reste dans l'historique et n'est jamais réutilisé |
+| Statuts | À payer, Partiellement payée, En retard (échéance dépassée), Payée, Annulée |
+| Historique | chaque facture garde le journal de ses événements (émission, paiements, annulation, utilisateur, date et heure) |
+
+- **Historique des factures** : filtres par client, année, statut et recherche libre ; totaux HT, TTC,
+  encaissé, reste à encaisser ; export CSV (Excel).
+- **Fiche client** : chiffre d'affaires, encaissements, reste dû, historique et séries utilisées par année.
+- **Lignes récurrentes** (fiche client) et **Facturation en série** : émet en un clic une facture
+  par client coché (abonnements, maintenance, loyers…).
+- **Dupliquer** une facture pré-remplit une nouvelle facture avec les mêmes lignes.
+- La facture affiche le total TVA par taux, le montant TTC **en toutes lettres**
+  (« Arrêtée la présente facture à la somme de… ») et s'imprime ou s'enregistre en PDF.
+
+Les données sont enregistrées dans `donnees/clients.json`, `donnees/factures.json` et
+`donnees/entreprise.json`.
+
 ## Utilisation
 
 ### 1. Interface web (recommandé)
@@ -225,6 +258,8 @@ python3 -m unittest discover -s tests -v
   ne les remplace pas : réimportez le fichier du mois avant de calculer la paie.
 - Les indemnités de licenciement, le solde de tout compte complet et les
   déclarations CNSS (DAMANCOM) / IR (état 9421) ne sont pas encore générés.
+- Facturation : pas encore d'avoirs (une facture payée ne peut pas être annulée), de devis,
+  de remises par ligne ni de droit de timbre sur les paiements en espèces.
 
 Ce logiciel est un outil d'aide au calcul : faites valider les paramètres par votre
 expert-comptable ou votre conseiller social avant une utilisation en production.

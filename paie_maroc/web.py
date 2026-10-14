@@ -126,7 +126,8 @@ _utilisateur = contextvars.ContextVar("utilisateur", default=None)
 _chemin = contextvars.ContextVar("chemin", default="/")
 
 LIENS = [("/salaries", "Salariés et paie du mois"), ("/", "Bulletin individuel"),
-         ("/conges", "Congés payés"), ("/referentiel", "Référentiel")]
+         ("/conges", "Congés payés"), ("/referentiel", "Référentiel"),
+         ("/factures", "Factures"), ("/clients", "Clients"), ("/entreprise", "Entreprise")]
 
 
 def _barre() -> str:
@@ -136,8 +137,8 @@ def _barre() -> str:
                 '</div></header>')
     liens = LIENS + ([("/utilisateurs", "Utilisateurs")] if auth.est_admin(utilisateur) else [])
     chemin = _chemin.get()
-    nav = "".join(f'<a href="{url}"{" class=actif" if url == chemin else ""}>{escape(nom)}</a>'
-                  for url, nom in liens)
+    nav = "".join(f'<a href="{url}"{" class=actif" if chemin in (url, url + ".csv") or chemin.startswith(url + "/") else ""}>'
+                  f'{escape(nom)}</a>' for url, nom in liens)
     return (f'<header class="barre"><div class="barre-int"><div class="marque">Paie <span>Maroc</span></div>'
             f'<nav>{nav}</nav><div class="compte"><a href="/mot-de-passe" style="color:#cfd5e1">{escape(utilisateur)}</a>'
             f'<form method="post" action="/deconnexion"><button type="submit">Déconnexion</button></form>'
@@ -564,6 +565,9 @@ class Gestionnaire(BaseHTTPRequestHandler):
             return self._rediriger("/salaries")
         if self.chemin in pages:
             return self._envoyer(pages[self.chemin]())
+        from . import web_facturation
+        if self.chemin.startswith(web_facturation.PREFIXES):
+            return web_facturation.get(self)
         if self.chemin == "/modele.csv":
             return self._fichier("modele_salaries.csv", modele_csv(), "text/csv; charset=utf-8")
         if self.chemin == "/journal.csv":
@@ -587,6 +591,9 @@ class Gestionnaire(BaseHTTPRequestHandler):
         type_contenu = self.headers.get("Content-Type") or ""
         if type_contenu.startswith("multipart/form-data"):
             return self._post_import(_multipart(type_contenu, corps))
+        from . import web_facturation
+        if self.chemin.startswith(web_facturation.PREFIXES):
+            return web_facturation.post(self, corps)
         f = _valeurs(corps)
         try:
             self._post(f)
