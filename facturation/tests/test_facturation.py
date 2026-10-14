@@ -11,10 +11,10 @@ from decimal import Decimal as D
 from http.server import ThreadingHTTPServer
 
 _dossier = tempfile.TemporaryDirectory()
-os.environ.setdefault("PAIE_DONNEES", _dossier.name)
+os.environ["FACTURATION_DONNEES"] = _dossier.name
 
-from paie_maroc import facturation as fa, stockage  # noqa: E402
-from paie_maroc.web import Gestionnaire  # noqa: E402
+from facturation_maroc import factures as fa, stockage  # noqa: E402
+from facturation_maroc.web import Gestionnaire  # noqa: E402
 
 
 def vider():
@@ -206,6 +206,22 @@ class TestPagesFacturation(unittest.TestCase):
         self.assertIn("RBT-2026-0003", page)                         # prochain numéro de la série
         code, _, _ = self.requete(c, "/factures/voir?numero=INCONNU")
         self.assertEqual(code, 404)
+
+        # Comptes : un utilisateur simple n'accède pas à la gestion des utilisateurs.
+        self.requete(c, "/utilisateurs/ajouter", {"identifiant": "compta", "mot_de_passe": "motdepasse2",
+                                                  "role": "utilisateur"})
+        autre = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar()))
+        _, url, _ = self.requete(autre, "/factures")
+        self.assertTrue(url.endswith("/connexion"))
+        code, _, _ = self.requete(autre, "/connexion", {"identifiant": "compta", "mot_de_passe": "faux"})
+        self.assertEqual(code, 401)
+        _, url, page = self.requete(autre, "/connexion", {"identifiant": "compta", "mot_de_passe": "motdepasse2"})
+        self.assertTrue(url.endswith("/factures"))
+        self.assertIn("RBT-2026-0001", page)
+        code, _, _ = self.requete(autre, "/utilisateurs")
+        self.assertEqual(code, 403)
+        _, url, _ = self.requete(c, "/deconnexion", {})
+        self.assertTrue(url.endswith("/connexion"))
 
 
 if __name__ == "__main__":

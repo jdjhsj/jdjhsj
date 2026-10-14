@@ -1,4 +1,4 @@
-"""Facturation : clients, séries de numérotation par client et historique des factures.
+"""Facturation : entreprise, clients, séries de numérotation par client et historique des factures.
 
 Chaque client possède sa propre série : ``<PRÉFIXE>-<ANNÉE>-<NNNN>`` (ex. ``ATLAS-2026-0001``).
 La numérotation est continue et sans trou pour chaque client et chaque année ; un numéro
@@ -15,10 +15,9 @@ import io
 import re
 import threading
 from datetime import date, datetime, timedelta
-from decimal import Decimal as D
+from decimal import ROUND_HALF_UP, Decimal as D
 
 from . import stockage
-from .calcul import ZERO, arrondi, dec
 
 FICHIER_ENTREPRISE = "entreprise.json"
 FICHIER_CLIENTS = "clients.json"
@@ -32,6 +31,27 @@ CHAMPS_CLIENT = ("nom", "adresse", "ville", "ice", "if_fiscal", "rc", "email", "
 
 # Une seule écriture à la fois : garantit des numéros uniques et sans trou.
 _verrou = threading.RLock()
+
+ZERO = D("0")
+CENT = D("0.01")
+
+
+def dec(valeur) -> D:
+    """Convertit une saisie (« 1 250,50 ») en Decimal."""
+    if valeur is None or valeur == "":
+        return ZERO
+    return D(str(valeur).replace(",", ".").replace(" ", "").replace("\u00a0", ""))
+
+
+def arrondi(valeur) -> D:
+    return D(valeur).quantize(CENT, rounding=ROUND_HALF_UP)
+
+
+def dh(valeur) -> str:
+    """Format français : 12 500,50."""
+    if valeur is None:
+        return ""
+    return f"{valeur:,.2f}".replace(",", " ").replace(".", ",")
 
 
 # ---------------------------------------------------------------------------

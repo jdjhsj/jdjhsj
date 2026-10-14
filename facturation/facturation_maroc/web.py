@@ -1,14 +1,125 @@
-"""Pages web de la facturation : clients, séries de factures par client, historique."""
+"""Interface web locale de Facturation Maroc (bibliothèque standard uniquement).
+
+Lancement : python -m facturation_maroc   puis ouvrir http://localhost:8080
+"""
 
 from __future__ import annotations
 
+import contextvars
+import time
 from datetime import date
 from html import escape
-from urllib.parse import parse_qs, quote
+from http.cookies import SimpleCookie
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from urllib.parse import parse_qs, quote, urlparse
 
-from . import facturation as fa
-from .rendu import MOIS, dh
-from .web import _champ, _messages, _num, _page, _utilisateur
+from . import auth
+from . import factures as fa
+from .factures import dh
+
+MOIS = ["janvier", "février", "mars", "avril", "mai", "juin", "juillet",
+        "août", "septembre", "octobre", "novembre", "décembre"]
+
+CSS = """
+:root { --encre:#1d2433; --gris:#5b6475; --trait:#d5dae3; --fond:#f5f7fa; --accent:#1f4e8c; }
+* { box-sizing:border-box; }
+body { font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; color:var(--encre); background:var(--fond); margin:0; padding:24px 16px; }
+h1 { font-size:20px; margin:0 0 4px; } .sous { color:var(--gris); margin:0 0 20px; }
+table { width:100%; border-collapse:collapse; font-size:13.5px; margin-bottom:18px; }
+th, td { padding:6px 8px; border-bottom:1px solid var(--trait); text-align:right; font-variant-numeric:tabular-nums; }
+th:first-child, td:first-child { text-align:left; }
+th { background:var(--fond); font-weight:600; font-size:12.5px; color:var(--gris); }
+tr.total td { font-weight:600; background:#fafbfc; }
+.wrap { overflow-x:auto; }
+form, .carte { max-width:900px; margin:0 auto 24px; background:#fff; border:1px solid var(--trait); border-radius:8px; padding:24px; }
+.grille { display:grid; grid-template-columns:repeat(auto-fit,minmax(200px,1fr)); gap:10px 16px; }
+label { display:flex; flex-direction:column; font-size:13px; color:var(--gris); gap:4px; }
+input { font:inherit; color:var(--encre); padding:7px 9px; border:1px solid var(--trait); border-radius:5px; min-width:0; }
+select { font:inherit; padding:7px 9px; border:1px solid var(--trait); border-radius:5px; background:#fff; color:var(--encre); }
+button[type=submit] { font:inherit; font-weight:600; background:var(--accent); color:#fff; border:none; padding:10px 20px; border-radius:6px; cursor:pointer; }
+details { border:1px solid var(--trait); border-radius:6px; margin:0 0 12px; padding:10px 16px; }
+summary { font-weight:600; cursor:pointer; }
+.ref td, .ref th { text-align:left; vertical-align:top; }
+.barre { background:var(--encre); color:#fff; margin:-24px -16px 24px; padding:0 16px; }
+.barre-int { max-width:1100px; margin:0 auto; display:flex; align-items:center; gap:20px; flex-wrap:wrap; min-height:56px; }
+.marque { font-weight:700; font-size:16px; letter-spacing:.2px; white-space:nowrap; }
+.marque span { color:#8fb8f0; }
+nav { display:flex; gap:4px; flex-wrap:wrap; flex:1; }
+nav a { color:#cfd5e1; text-decoration:none; padding:8px 12px; border-radius:6px; font-size:14px; }
+nav a:hover { background:rgba(255,255,255,.08); color:#fff; }
+nav a.actif { background:rgba(255,255,255,.14); color:#fff; }
+.compte { display:flex; align-items:center; gap:10px; font-size:13px; color:#cfd5e1; }
+.compte form { margin:0; padding:0; border:none; background:none; }
+.compte button { font:inherit; background:transparent; color:#fff; border:1px solid rgba(255,255,255,.35); border-radius:6px; padding:5px 10px; cursor:pointer; }
+.large { max-width:1100px; }
+.ok { max-width:900px; margin:0 auto 16px; background:#e8f6ef; border:1px solid #9fd5bb; padding:10px 14px; border-radius:6px; }
+.erreur { max-width:900px; margin:0 auto 16px; background:#fdecec; border:1px solid #e9a3a3; padding:10px 14px; border-radius:6px; }
+.ok ul, .erreur ul { margin:6px 0 0; padding-left:20px; }
+.bouton { display:inline-block; font:inherit; font-size:14px; padding:9px 16px; border-radius:6px; border:1px solid var(--trait); background:#fff; color:var(--encre); text-decoration:none; cursor:pointer; }
+button[type=submit].bouton { font-weight:400; background:#fff; color:var(--encre); border:1px solid var(--trait); padding:9px 16px; }
+button[type=submit].bouton.danger { color:#a12a2a; border-color:#e9a3a3; }
+button[type=submit].lien-btn { background:none; border:none; color:#a12a2a; cursor:pointer; font:inherit; font-size:13px; font-weight:400; padding:0; }
+.ligne-actions { display:flex; gap:10px; flex-wrap:wrap; align-items:end; margin-top:12px; }
+.ligne-actions form { margin:0; padding:0; border:none; background:none; }
+.connexion { max-width:400px; margin:8vh auto 0; }
+.connexion h1 { margin-top:0; } .connexion label { margin-bottom:12px; } .connexion button[type=submit] { width:100%; }
+.stats { display:grid; grid-template-columns:repeat(auto-fit,minmax(160px,1fr)); gap:10px; margin:0 0 16px; }
+.stats div { border:1px solid var(--trait); border-radius:6px; padding:10px 12px; font-size:13px; }
+.stats b { display:block; font-size:18px; margin-top:2px; }
+@page { margin:15mm; }
+@media print { body { background:#fff; padding:0; } .barre, .no-print, .erreur, .ok { display:none !important; } }
+"""
+
+
+def _champ(nom, libelle, valeur="", type_="text", extra=""):
+    return (f'<label>{escape(libelle)}<input name="{nom}" type="{type_}" '
+            f'value="{escape(str(valeur))}" {extra}></label>')
+
+
+def _num(nom, libelle, valeur="", aide=""):
+    aide_html = f'<span class="aide">{escape(aide)}</span>' if aide else ""
+    return (f'<label>{escape(libelle)}{aide_html}<input name="{nom}" type="text" inputmode="decimal" '
+            f'value="{escape(str(valeur))}"></label>')
+
+
+# Utilisateur connecté pour la requête en cours (affiché dans la barre de navigation).
+_utilisateur = contextvars.ContextVar("utilisateur", default=None)
+_chemin = contextvars.ContextVar("chemin", default="/")
+
+LIENS = [("/factures", "Factures"), ("/factures/nouvelle", "Nouvelle facture"),
+         ("/factures/generer", "Facturation en série"), ("/clients", "Clients"), ("/entreprise", "Entreprise")]
+
+
+def _barre() -> str:
+    marque = '<div class="marque">Facturation <span>Maroc</span></div>'
+    utilisateur = _utilisateur.get()
+    if not utilisateur:
+        return f'<header class="barre"><div class="barre-int">{marque}</div></header>'
+    liens = LIENS + ([("/utilisateurs", "Utilisateurs")] if auth.est_admin(utilisateur) else [])
+    chemin = _chemin.get()
+    nav = "".join(f'<a href="{url}"{" class=actif" if chemin == url else ""}>{escape(nom)}</a>'
+                  for url, nom in liens)
+    return (f'<header class="barre"><div class="barre-int">{marque}'
+            f'<nav>{nav}</nav><div class="compte"><a href="/mot-de-passe" style="color:#cfd5e1">{escape(utilisateur)}</a>'
+            f'<form method="post" action="/deconnexion"><button type="submit">Déconnexion</button></form>'
+            f'</div></div></header>')
+
+
+def _page(titre, corps):
+    return (f'<!doctype html><html lang="fr"><head><meta charset="utf-8">'
+            f'<meta name="viewport" content="width=device-width,initial-scale=1">'
+            f'<title>{escape(titre)}</title><style>{CSS}{FACT_CSS}</style></head><body>'
+            f'{_barre()}{corps}</body></html>')
+
+
+def _messages(erreur: str = "", succes: str = "", details: list | None = None) -> str:
+    liste = "<ul>" + "".join(f"<li>{escape(d)}</li>" for d in details) + "</ul>" if details else ""
+    if erreur:
+        return f'<div class="erreur">{escape(erreur)}{liste}</div>'
+    if succes:
+        return f'<div class="ok">{escape(succes)}{liste}</div>'
+    return ""
+
 
 NB_LIGNES = 10  # lignes de saisie sur une facture
 NB_LIGNES_RECURRENTES = 6
@@ -39,10 +150,6 @@ a.num { font-weight:600; color:var(--accent); text-decoration:none; }
 """
 
 CLASSES_STATUT = {"Payée": "payee", "En retard": "retard", "Partiellement payée": "partielle", "Annulée": "annulee"}
-
-
-def _page_f(titre: str, corps: str) -> str:
-    return _page(titre, f"<style>{FACT_CSS}</style>{corps}")
 
 
 def _etiquette(f: dict) -> str:
@@ -138,7 +245,7 @@ def page_entreprise(erreur: str = "", succes: str = "", valeurs: dict | None = N
     e = valeurs if valeurs is not None else fa.entreprise()
     champs = "".join(_champ(k, l, e.get(k, ""), extra="required" if k == "raison_sociale" else "")
                      for k, l in LIBELLES_ENTREPRISE.items())
-    return _page_f("Entreprise", f"""{_messages(erreur, succes)}
+    return _page("Entreprise", f"""{_messages(erreur, succes)}
 <form method="post" action="/entreprise">
   <h1>Informations de l'entreprise</h1>
   <p class="sous">Elles figurent sur chaque facture (mentions obligatoires : raison sociale, adresse, ICE, IF, RC,
@@ -186,7 +293,7 @@ def page_clients(erreur: str = "", succes: str = "", valeurs: dict | None = None
                f'<th>Série</th><th>Prochain n° ({annee})</th><th>Factures</th><th>Facturé TTC</th><th>Reste dû</th>'
                f'<th></th></tr></thead><tbody>{"".join(lignes)}</tbody></table></div>'
                if lignes else '<p class="sous">Aucun client : ajoutez votre premier client ci-dessous.</p>')
-    return _page_f("Clients", f"""{_messages(erreur, succes)}
+    return _page("Clients", f"""{_messages(erreur, succes)}
 <div class="carte large">
   <h1>Clients</h1>
   <p class="sous">Chaque client a sa propre série de factures : <code>PRÉFIXE-ANNÉE-NUMÉRO</code>, numérotation
@@ -203,7 +310,7 @@ def page_clients(erreur: str = "", succes: str = "", valeurs: dict | None = None
 def page_fiche_client(code: str, erreur: str = "", succes: str = "", valeurs: dict | None = None) -> str:
     c = fa.client(code)
     if c is None:
-        return _page_f("Client", _messages("Client introuvable."))
+        return _page("Client", _messages("Client introuvable."))
     affiche = {**c, **(valeurs or {})}
     recurrentes = valeurs.get("lignes_recurrentes", c["lignes_recurrentes"]) if valeurs else c["lignes_recurrentes"]
     siennes = fa.rechercher(client_code=code)
@@ -216,7 +323,7 @@ def page_fiche_client(code: str, erreur: str = "", succes: str = "", valeurs: di
         f"<td>{dh(fa.montant(f['total_ttc']))}</td><td>{dh(fa.reste_a_payer(f))}</td><td>{_etiquette(f)}</td></tr>"
         for f in siennes)
     coche = " checked" if affiche.get("actif", True) else ""
-    return _page_f(c["nom"], f"""{_messages(erreur, succes)}
+    return _page(c["nom"], f"""{_messages(erreur, succes)}
 <div class="carte large">
   <h1>{escape(c["nom"])} <span class="sous" style="font-size:14px">({escape(c["code"])})</span></h1>
   <div class="stats">
@@ -277,12 +384,12 @@ def page_nouvelle(valeurs: dict | None = None, erreur: str = "", client: str = "
             lignes = fiche["lignes_recurrentes"]
     options = _options_clients(v.get("client", ""))
     if not options:
-        return _page_f("Nouvelle facture", _messages("Ajoutez d'abord un client.")
+        return _page("Nouvelle facture", _messages("Ajoutez d'abord un client.")
                        + '<p style="text-align:center"><a class="bouton" href="/clients">Ajouter un client</a></p>')
     avert = "" if fa.entreprise().get("ice") else (
         '<div class="erreur">Les informations de votre entreprise (ICE, IF, RC…) ne sont pas complètes : '
         '<a href="/entreprise">compléter</a> avant d\'émettre des factures.</div>')
-    return _page_f("Nouvelle facture", f"""{_messages(erreur)}{avert}
+    return _page("Nouvelle facture", f"""{_messages(erreur)}{avert}
 <form method="post" action="/factures/nouvelle" class="large">
   <h1>Nouvelle facture</h1>
   <p class="sous">Le numéro est attribué automatiquement dans la série du client au moment de l'émission.
@@ -360,7 +467,7 @@ def facture_html(f: dict) -> str:
 def page_facture(numero: str, erreur: str = "", succes: str = "") -> str:
     f = fa.facture(numero)
     if f is None:
-        return _page_f("Facture", _messages("Facture introuvable."))
+        return _page("Facture", _messages("Facture introuvable."))
     paiements = "".join(f"<tr><td>{_jour(p['date'])}</td><td>{escape(p['mode'])}</td><td>{escape(p['reference'])}</td>"
                         f"<td>{dh(fa.montant(p['montant']))}</td></tr>" for p in f["paiements"])
     evenements = "".join(f"<tr><td>{escape(h['date'].replace('T', ' '))}</td><td>{escape(h['utilisateur'])}</td>"
@@ -404,7 +511,7 @@ def page_facture(numero: str, erreur: str = "", succes: str = "") -> str:
   <div class="wrap"><table class="historique-f"><thead><tr><th>Date</th><th>Utilisateur</th><th>Action</th></tr></thead>
   <tbody>{evenements}</tbody></table></div>
 </div>"""
-    return _page_f(f"Facture {numero}", _messages(erreur, succes) + panneau + facture_html(f))
+    return _page(f"Facture {numero}", _messages(erreur, succes) + panneau + facture_html(f))
 
 
 def page_factures(requete: dict) -> str:
@@ -422,7 +529,7 @@ def page_factures(requete: dict) -> str:
                '<th class="txt">Client</th><th class="txt">Objet</th><th>HT</th><th>TTC</th><th>Reste</th><th>Statut</th></tr></thead>'
                f'<tbody>{lignes}</tbody></table></div>' if lignes else
                '<p class="sous">Aucune facture ne correspond.</p>')
-    return _page_f("Factures", f"""
+    return _page("Factures", f"""
 <div class="carte large">
   <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap">
     <h1 style="margin:0">Historique des factures</h1>
@@ -475,7 +582,7 @@ def page_generer(erreur: str = "", resultat: str = "") -> str:
                       f'<td>{detail}</td><td>{dh(ttc)}</td>'
                       f'<td>{_jour(dernieres.get(c["code"], ""))}</td></tr>')
     objet = f"Prestations {MOIS[date.today().month - 1]} {annee}"
-    return _page_f("Facturation en série", f"""{_messages(erreur)}{resultat}
+    return _page("Facturation en série", f"""{_messages(erreur)}{resultat}
 <form method="post" action="/factures/generer" class="large">
   <h1>Facturation en série</h1>
   <p class="sous">Émet en une fois une facture par client coché, à partir de ses lignes récurrentes
@@ -491,101 +598,313 @@ def page_generer(erreur: str = "", resultat: str = "") -> str:
 
 
 # ---------------------------------------------------------------------------
-# Routage (appelé par web.Gestionnaire)
+# Comptes utilisateurs
 # ---------------------------------------------------------------------------
 
-PREFIXES = ("/factures", "/clients", "/entreprise")
+def page_connexion(erreur: str = "") -> str:
+    return _page("Connexion", f"""
+<form method="post" action="/connexion" class="connexion">
+  <h1>Connexion</h1>
+  <p class="sous">Facturation — séries de factures par client</p>
+  {_messages(erreur)}
+  {_champ("identifiant", "Identifiant", extra='required autofocus autocomplete="username"')}
+  {_champ("mot_de_passe", "Mot de passe", type_="password", extra='required autocomplete="current-password"')}
+  <button type="submit">Se connecter</button>
+</form>""")
 
 
-def get(h) -> None:
-    q = lambda nom: (h.requete.get(nom) or [""])[0]
-    chemin = h.chemin
-    if chemin == "/factures":
-        return h._envoyer(page_factures(h.requete))
-    if chemin == "/factures/nouvelle":
-        return h._envoyer(page_nouvelle(client=q("client"), depuis=q("depuis")))
-    if chemin == "/factures/voir":
-        f = fa.facture(q("numero"))
-        return h._envoyer(page_facture(q("numero")), 200 if f else 404)
-    if chemin == "/factures/generer":
-        return h._envoyer(page_generer())
-    if chemin == "/factures.csv":
-        liste = fa.rechercher(q("client"), q("annee"), q("statut"), q("q"))
-        return h._fichier("factures.csv", fa.export_csv(liste), "text/csv; charset=utf-8")
-    if chemin == "/clients":
-        return h._envoyer(page_clients())
-    if chemin == "/clients/fiche":
-        return h._envoyer(page_fiche_client(q("code")), 200 if fa.client(q("code")) else 404)
-    if chemin == "/entreprise":
-        return h._envoyer(page_entreprise())
-    h._envoyer(_page("Introuvable", _messages("Page introuvable.")), 404)
+def page_installation(erreur: str = "") -> str:
+    return _page("Premier lancement", f"""
+<form method="post" action="/installation" class="connexion">
+  <h1>Premier lancement</h1>
+  <p class="sous">Créez le compte administrateur. Il pourra ensuite ajouter d'autres utilisateurs.</p>
+  {_messages(erreur)}
+  {_champ("identifiant", "Identifiant", extra='required autofocus autocomplete="username"')}
+  {_champ("mot_de_passe", f"Mot de passe ({auth.LONGUEUR_MIN} caractères minimum)", type_="password",
+          extra='required autocomplete="new-password"')}
+  {_champ("confirmation", "Confirmer le mot de passe", type_="password", extra='required autocomplete="new-password"')}
+  <button type="submit">Créer le compte</button>
+</form>""")
 
 
-def post(h, corps: bytes) -> None:
-    valeurs = parse_qs(corps.decode("utf-8"), keep_blank_values=True)
-    f = {k: v[0].strip() for k, v in valeurs.items()}
-    f["clients"] = valeurs.get("clients", [])  # cases à cocher multiples
-    chemin, moi = h.chemin, _utilisateur.get() or ""
-    if chemin == "/entreprise":
-        try:
-            fa.enregistrer_entreprise(f)
-        except ValueError as exc:
-            return h._envoyer(page_entreprise(str(exc), valeurs=f), 400)
-        return h._envoyer(page_entreprise(succes="Informations enregistrées."))
-    if chemin == "/clients/ajouter":
-        try:
-            c = fa.enregistrer_client(f)
-        except ValueError as exc:
-            return h._envoyer(page_clients(str(exc), valeurs=f), 400)
-        return h._rediriger(f"/clients/fiche?code={quote(c['code'])}")
-    if chemin == "/clients/modifier":
-        code = f.get("code", "")
-        valeurs = {**f, "actif": f.get("actif") == "1", "lignes_recurrentes": lignes_du_formulaire(f, "rec_")}
-        try:
-            fa.enregistrer_client(valeurs, code)
-        except ValueError as exc:
-            return h._envoyer(page_fiche_client(code, str(exc), valeurs=valeurs), 400)
-        return h._envoyer(page_fiche_client(code, succes="Fiche client enregistrée."))
-    if chemin == "/clients/supprimer":
-        try:
-            fa.supprimer_client(f.get("code", ""))
-        except ValueError as exc:
-            return h._envoyer(page_clients(str(exc)), 400)
-        return h._rediriger("/clients")
-    if chemin == "/factures/nouvelle":
-        try:
-            nouvelle = fa.creer_facture(f.get("client", ""), lignes_du_formulaire(f), f.get("date"),
-                                        f.get("echeance"), f.get("objet", ""), f.get("notes", ""), moi)
-        except ValueError as exc:
-            return h._envoyer(page_nouvelle(f, str(exc)), 400)
-        return h._rediriger(f"/factures/voir?numero={quote(nouvelle['numero'])}")
-    if chemin == "/factures/paiement":
-        numero = f.get("numero", "")
-        try:
-            fa.enregistrer_paiement(numero, f.get("montant"), f.get("date"), f.get("mode", ""),
-                                    f.get("reference", ""), moi)
-        except ValueError as exc:
-            return h._envoyer(page_facture(numero, str(exc)), 400)
-        return h._envoyer(page_facture(numero, succes="Paiement enregistré."))
-    if chemin == "/factures/annuler":
-        numero = f.get("numero", "")
-        try:
-            fa.annuler_facture(numero, f.get("motif", ""), moi)
-        except ValueError as exc:
-            return h._envoyer(page_facture(numero, str(exc)), 400)
-        return h._envoyer(page_facture(numero, succes="Facture annulée."))
-    if chemin == "/factures/generer":
-        codes = f.get("clients") or []
-        if not codes:
-            return h._envoyer(page_generer("Cochez au moins un client."), 400)
-        try:
-            creees, erreurs = fa.generer_series(codes, f.get("date"), f.get("objet", ""), moi)
-        except ValueError as exc:
-            return h._envoyer(page_generer(str(exc)), 400)
-        liste = "".join(f"<li>{_lien_facture(x['numero'])} — {escape(x['client']['nom'])} — "
-                        f"{dh(fa.montant(x['total_ttc']))} DH TTC</li>" for x in creees)
-        resultat = f'<div class="ok">{len(creees)} facture(s) émise(s) :<ul>{liste}</ul></div>' if creees else ""
-        if erreurs:
-            resultat += _messages("Certaines factures n'ont pas été émises :", details=erreurs)
-        return h._envoyer(page_generer(resultat=resultat), 200 if creees else 400)
-    h._envoyer(_page("Introuvable", _messages("Page introuvable.")), 404)
+def page_utilisateurs(erreur: str = "", succes: str = "") -> str:
+    moi = _utilisateur.get()
+    lignes = []
+    for nom, compte in sorted(auth.utilisateurs().items()):
+        bouton = "" if nom == moi else (
+            f'<form method="post" action="/utilisateurs/supprimer" onsubmit="return confirm(\'Supprimer {escape(nom)} ?\')">'
+            f'<input type="hidden" name="identifiant" value="{escape(nom)}">'
+            f'<button class="lien-btn" type="submit">Supprimer</button></form>')
+        lignes.append(f"<tr><td>{escape(nom)}{' (vous)' if nom == moi else ''}</td>"
+                      f"<td>{'Administrateur' if compte.get('admin') else 'Utilisateur'}</td><td>{bouton}</td></tr>")
+    return _page("Utilisateurs", f"""{_messages(erreur, succes)}
+<div class="carte">
+  <h1>Utilisateurs</h1>
+  <div class="wrap"><table class="ref"><thead><tr><th>Identifiant</th><th>Rôle</th><th></th></tr></thead>
+  <tbody>{"".join(lignes)}</tbody></table></div>
+</div>
+<form method="post" action="/utilisateurs/ajouter">
+  <h2 style="margin-top:0">Ajouter un utilisateur</h2>
+  <div class="grille">
+    {_champ("identifiant", "Identifiant", extra="required")}
+    {_champ("mot_de_passe", f"Mot de passe ({auth.LONGUEUR_MIN} caractères min.)", type_="password",
+            extra='required autocomplete="new-password"')}
+    <label>Rôle<select name="role"><option value="utilisateur">Utilisateur</option>
+      <option value="admin">Administrateur</option></select></label>
+  </div>
+  <p><button type="submit">Ajouter</button></p>
+</form>""")
+
+
+def page_mot_de_passe(erreur: str = "") -> str:
+    return _page("Mot de passe", f"""{_messages(erreur)}
+<form method="post" action="/mot-de-passe" class="connexion" style="margin-top:0">
+  <h1>Changer mon mot de passe</h1>
+  {_champ("ancien", "Mot de passe actuel", type_="password", extra='required autocomplete="current-password"')}
+  {_champ("nouveau", "Nouveau mot de passe", type_="password", extra='required autocomplete="new-password"')}
+  {_champ("confirmation", "Confirmer", type_="password", extra='required autocomplete="new-password"')}
+  <button type="submit">Enregistrer</button>
+</form>""")
+
+
+# ---------------------------------------------------------------------------
+# Serveur
+# ---------------------------------------------------------------------------
+
+TAILLE_MAX = 2 * 1024 * 1024
+PAGES_PUBLIQUES = {"/connexion", "/installation"}
+ACCUEIL = "/factures"
+
+
+class Gestionnaire(BaseHTTPRequestHandler):
+    def log_message(self, format, *args):  # pas de journal console à chaque requête
+        pass
+
+    def _envoyer(self, contenu, code: int = 200, type_contenu="text/html; charset=utf-8",
+                 entetes: dict | None = None):
+        donnees = contenu.encode("utf-8") if isinstance(contenu, str) else contenu
+        self.send_response(code)
+        self.send_header("Content-Type", type_contenu)
+        self.send_header("Content-Length", str(len(donnees)))
+        self.send_header("X-Frame-Options", "DENY")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("Cache-Control", "no-store")
+        for cle, valeur in (entetes or {}).items():
+            self.send_header(cle, valeur)
+        self.end_headers()
+        self.wfile.write(donnees)
+
+    def _rediriger(self, url: str, cookie: str | None = None):
+        self.send_response(303)
+        self.send_header("Location", url)
+        if cookie is not None:
+            self.send_header("Set-Cookie", cookie)
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+
+    def _fichier(self, nom: str, contenu: str, type_contenu: str):
+        self._envoyer(contenu.encode("utf-8-sig"), type_contenu=type_contenu,
+                      entetes={"Content-Disposition": f'attachment; filename="{nom}"'})
+
+    def _introuvable(self):
+        self._envoyer(_page("Introuvable", _messages("Page introuvable.")), 404)
+
+    def _jeton(self) -> str | None:
+        cookie = SimpleCookie(self.headers.get("Cookie") or "")
+        return cookie["session"].value if "session" in cookie else None
+
+    def _preparer(self) -> bool:
+        """Vérifie l'accès ; retourne False si une réponse a déjà été envoyée."""
+        url = urlparse(self.path)
+        self.chemin, self.requete = url.path, parse_qs(url.query)
+        utilisateur = auth.session(self._jeton())
+        _utilisateur.set(utilisateur)
+        _chemin.set(self.chemin)
+        if auth.aucun_utilisateur() and self.chemin != "/installation":
+            self._rediriger("/installation")
+            return False
+        if utilisateur is None and self.chemin not in PAGES_PUBLIQUES:
+            self._rediriger("/connexion")
+            return False
+        if self.chemin.startswith("/utilisateurs") and not auth.est_admin(utilisateur):
+            self._envoyer(_page("Accès refusé", _messages("Réservé aux administrateurs.")), 403)
+            return False
+        return True
+
+    def _ouvrir_session(self, identifiant: str):
+        jeton = auth.ouvrir_session(identifiant)
+        self._rediriger(ACCUEIL, f"session={jeton}; HttpOnly; SameSite=Strict; Path=/")
+
+    # --- GET ---
+    def do_GET(self):
+        if not self._preparer():
+            return
+        q = lambda nom: (self.requete.get(nom) or [""])[0]
+        chemin = self.chemin
+        if chemin == "/installation" and not auth.aucun_utilisateur():
+            return self._rediriger("/connexion")
+        if chemin == "/connexion" and _utilisateur.get():
+            return self._rediriger(ACCUEIL)
+        pages = {
+            "/connexion": page_connexion, "/installation": page_installation,
+            "/utilisateurs": page_utilisateurs, "/mot-de-passe": page_mot_de_passe,
+            "/factures/generer": page_generer, "/clients": page_clients, "/entreprise": page_entreprise,
+        }
+        if chemin == "/":
+            return self._rediriger(ACCUEIL)
+        if chemin in pages:
+            return self._envoyer(pages[chemin]())
+        if chemin == "/factures":
+            return self._envoyer(page_factures(self.requete))
+        if chemin == "/factures/nouvelle":
+            return self._envoyer(page_nouvelle(client=q("client"), depuis=q("depuis")))
+        if chemin == "/factures/voir":
+            return self._envoyer(page_facture(q("numero")), 200 if fa.facture(q("numero")) else 404)
+        if chemin == "/clients/fiche":
+            return self._envoyer(page_fiche_client(q("code")), 200 if fa.client(q("code")) else 404)
+        if chemin == "/factures.csv":
+            liste = fa.rechercher(q("client"), q("annee"), q("statut"), q("q"))
+            return self._fichier("factures.csv", fa.export_csv(liste), "text/csv; charset=utf-8")
+        self._introuvable()
+
+    # --- POST ---
+    def do_POST(self):
+        if not self._preparer():
+            return
+        longueur = int(self.headers.get("Content-Length") or 0)
+        if longueur > TAILLE_MAX:
+            return self._envoyer(_page("Erreur", _messages("Requête trop volumineuse.")), 413)
+        valeurs = parse_qs(self.rfile.read(longueur).decode("utf-8"), keep_blank_values=True)
+        f = {k: v[0].strip() for k, v in valeurs.items()}
+        f["clients"] = valeurs.get("clients", [])  # cases à cocher multiples
+        if self.chemin in ("/installation", "/connexion", "/deconnexion", "/mot-de-passe") \
+                or self.chemin.startswith("/utilisateurs/"):
+            return self._post_comptes(f)
+        self._post_facturation(f)
+
+    def _post_comptes(self, f: dict):
+        chemin = self.chemin
+        if chemin == "/installation":
+            if not auth.aucun_utilisateur():
+                return self._rediriger("/connexion")
+            if f.get("mot_de_passe") != f.get("confirmation"):
+                return self._envoyer(page_installation("Les mots de passe ne correspondent pas."), 400)
+            try:
+                auth.creer_utilisateur(f.get("identifiant", ""), f.get("mot_de_passe", ""), admin=True)
+            except ValueError as exc:
+                return self._envoyer(page_installation(str(exc)), 400)
+            return self._ouvrir_session(f["identifiant"].strip())
+        if chemin == "/connexion":
+            identifiant = f.get("identifiant", "").strip()
+            if auth.verifier(identifiant, f.get("mot_de_passe", "")):
+                return self._ouvrir_session(identifiant)
+            time.sleep(1)  # ralentit les tentatives répétées
+            return self._envoyer(page_connexion("Identifiant ou mot de passe incorrect."), 401)
+        if chemin == "/deconnexion":
+            auth.fermer_session(self._jeton())
+            return self._rediriger("/connexion", "session=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0")
+        if chemin == "/mot-de-passe":
+            if f.get("nouveau") != f.get("confirmation"):
+                return self._envoyer(page_mot_de_passe("Les mots de passe ne correspondent pas."), 400)
+            try:
+                auth.changer_mot_de_passe(_utilisateur.get(), f.get("ancien", ""), f.get("nouveau", ""))
+            except ValueError as exc:
+                return self._envoyer(page_mot_de_passe(str(exc)), 400)
+            return self._ouvrir_session(_utilisateur.get())
+        if chemin == "/utilisateurs/ajouter":
+            try:
+                auth.creer_utilisateur(f.get("identifiant", ""), f.get("mot_de_passe", ""), f.get("role") == "admin")
+            except ValueError as exc:
+                return self._envoyer(page_utilisateurs(str(exc)), 400)
+            return self._envoyer(page_utilisateurs(succes=f"Utilisateur « {f['identifiant'].strip()} » ajouté."))
+        if chemin == "/utilisateurs/supprimer":
+            if f.get("identifiant") == _utilisateur.get():
+                return self._envoyer(page_utilisateurs("Vous ne pouvez pas supprimer votre propre compte."), 400)
+            try:
+                auth.supprimer_utilisateur(f.get("identifiant", ""))
+            except ValueError as exc:
+                return self._envoyer(page_utilisateurs(str(exc)), 400)
+            return self._envoyer(page_utilisateurs(succes="Utilisateur supprimé."))
+        self._introuvable()
+
+    def _post_facturation(self, f: dict):
+        chemin, moi = self.chemin, _utilisateur.get() or ""
+        if chemin == "/entreprise":
+            try:
+                fa.enregistrer_entreprise(f)
+            except ValueError as exc:
+                return self._envoyer(page_entreprise(str(exc), valeurs=f), 400)
+            return self._envoyer(page_entreprise(succes="Informations enregistrées."))
+        if chemin == "/clients/ajouter":
+            try:
+                c = fa.enregistrer_client(f)
+            except ValueError as exc:
+                return self._envoyer(page_clients(str(exc), valeurs=f), 400)
+            return self._rediriger(f"/clients/fiche?code={quote(c['code'])}")
+        if chemin == "/clients/modifier":
+            code = f.get("code", "")
+            valeurs = {**f, "actif": f.get("actif") == "1", "lignes_recurrentes": lignes_du_formulaire(f, "rec_")}
+            try:
+                fa.enregistrer_client(valeurs, code)
+            except ValueError as exc:
+                return self._envoyer(page_fiche_client(code, str(exc), valeurs=valeurs), 400)
+            return self._envoyer(page_fiche_client(code, succes="Fiche client enregistrée."))
+        if chemin == "/clients/supprimer":
+            try:
+                fa.supprimer_client(f.get("code", ""))
+            except ValueError as exc:
+                return self._envoyer(page_clients(str(exc)), 400)
+            return self._rediriger("/clients")
+        if chemin == "/factures/nouvelle":
+            try:
+                nouvelle = fa.creer_facture(f.get("client", ""), lignes_du_formulaire(f), f.get("date"),
+                                            f.get("echeance"), f.get("objet", ""), f.get("notes", ""), moi)
+            except ValueError as exc:
+                return self._envoyer(page_nouvelle(f, str(exc)), 400)
+            return self._rediriger(f"/factures/voir?numero={quote(nouvelle['numero'])}")
+        if chemin == "/factures/paiement":
+            numero = f.get("numero", "")
+            try:
+                fa.enregistrer_paiement(numero, f.get("montant"), f.get("date"), f.get("mode", ""),
+                                        f.get("reference", ""), moi)
+            except ValueError as exc:
+                return self._envoyer(page_facture(numero, str(exc)), 400)
+            return self._envoyer(page_facture(numero, succes="Paiement enregistré."))
+        if chemin == "/factures/annuler":
+            numero = f.get("numero", "")
+            try:
+                fa.annuler_facture(numero, f.get("motif", ""), moi)
+            except ValueError as exc:
+                return self._envoyer(page_facture(numero, str(exc)), 400)
+            return self._envoyer(page_facture(numero, succes="Facture annulée."))
+        if chemin == "/factures/generer":
+            codes = f.get("clients") or []
+            if not codes:
+                return self._envoyer(page_generer("Cochez au moins un client."), 400)
+            try:
+                creees, erreurs = fa.generer_series(codes, f.get("date"), f.get("objet", ""), moi)
+            except ValueError as exc:
+                return self._envoyer(page_generer(str(exc)), 400)
+            liste = "".join(f"<li>{_lien_facture(x['numero'])} — {escape(x['client']['nom'])} — "
+                            f"{dh(fa.montant(x['total_ttc']))} DH TTC</li>" for x in creees)
+            resultat = f'<div class="ok">{len(creees)} facture(s) émise(s) :<ul>{liste}</ul></div>' if creees else ""
+            if erreurs:
+                resultat += _messages("Certaines factures n'ont pas été émises :", details=erreurs)
+            return self._envoyer(page_generer(resultat=resultat), 200 if creees else 400)
+        self._introuvable()
+
+
+def lancer(hote: str = "127.0.0.1", port: int = 8080, ouvrir_navigateur: bool = False):
+    serveur = ThreadingHTTPServer((hote, port), Gestionnaire)
+    adresse = f"http://{'localhost' if hote == '127.0.0.1' else hote}:{port}"
+    print(f"Facturation disponible sur {adresse}")
+    print("Laissez cette fenêtre ouverte. Pour arrêter : fermez-la ou appuyez sur Ctrl+C.")
+    if ouvrir_navigateur:
+        import webbrowser
+        webbrowser.open(adresse)
+    try:
+        serveur.serve_forever()
+    except KeyboardInterrupt:
+        pass
+    finally:
+        serveur.server_close()
